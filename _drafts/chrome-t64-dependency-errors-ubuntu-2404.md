@@ -1,122 +1,108 @@
 ---
 layout: post
-title: "Fighting Chrome on Ubuntu 24.04: The t64 Dependency Trap"
+title: "Installing Chrome on Ubuntu 24.04: The t64 Dependency Trap"
 date: 2026-06-30 18:19:00 +0200
 categories: [troubleshooting, chrome, ubuntu]
-tags: [chrome, ubuntu-2404, playwright, browser-automation, headless]
+tags: [chrome, ubuntu-2404, dpkg, apt, dependency-resolution]
 ---
 
-The first time I ran `playwright install chromium` on a fresh Ubuntu 24.04 server and watched it fail with a wall of red text about "dependencies cannot be satisfied," I did what any reasonable person does: tried `--force`, tried `apt --fix-broken install`, tried restarting, tried Googling the exact error message, and then sat there wondering if I should just switch to Firefox.
-
-Spoiler: I didn't switch. But the fix is annoying enough that I'm writing it down so future-me doesn't have to rediscover it.
+The first time I downloaded the `google-chrome-stable_current_amd64.deb` on a fresh Ubuntu 24.04 server and ran `dpkg -i`, I got back a wall of "dependency problems prevent configuration" errors. Twelve missing packages, all at once. I did what any reasonable person does: tried `apt install` with the explicit names, hit a "virtual package" ambiguity, tried `--fix-broken`, and eventually watched 142 packages get pulled in. It's annoying enough that I'm writing it down so future-me doesn't have to rediscover it.
 
 ## The Error
 
-Here's the actual output that greeted me:
+After downloading and running dpkg:
+
+```bash
+wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+dpkg -i google-chrome-stable_current_amd64.deb
+```
+
+dpkg reports success but then apt refuses to configure Chrome:
 
 ```
-Error: Failed to install chromium
-Ubuntu 24.04 LTS (Noble Numbat) is not officially supported by Playwright.
-Please use Ubuntu 22.04 or Debian 11/12 instead.
+dpkg: dependency problems prevent configuration of google-chrome-stable:
+ google-chrome-stable depends on fonts-liberation; but:
+  Package fonts-liberation is not installed.
+ google-chrome-stable depends on libasound2; but:
+  Package libasound2 is not installed.
+ google-chrome-stable depends on libatk-bridge2.0-0; but:
+  Package libatk-bridge2.0-0 is not installed.
+ google-chrome-stable depends on libatk1.0-0; but:
+  Package libatk1.0-0 is not installed.
+ google-chrome-stable depends on libatspi2.0-0; but:
+  Package libatspi2.0-0 is not installed.
+ google-chrome-stable depends on libcups2; but:
+  Package libcups2 is not installed.
+ google-chrome-stable depends on libgbm1; but:
+  Package libgbm1 is not installed.
+ google-chrome-stable depends on libgtk-3-0; but:
+  Package libgtk-3-0 is not installed.
+ google-chrome-stable depends on libpango-1.0-0; but:
+  Package libpango-1.0-0 is not installed.
+ google-chrome-stable depends on libcairo2; but:
+  Package libcairo2 is not installed.
+ google-chrome-stable depends on libvulkan1; but:
+  Package libvulkan1 is not installed.
+ google-chrome-stable depends on xdg-utils; but:
+  Package xdg-utils is not installed.
 ```
 
-Playwright's system-dependency installer (`playwright install-deps chromium`) then proceeds to try anyway. It runs `apt-get install` with a long list of packages like `libnss3`, `libnspr4`, `libatk1.0-0t64`, `libcups2t64`, and so on. And *that's* where things fall apart, because on 24.04 several of those packages have been renamed with a `t64` suffix as part of Ubuntu's 64-bit time_t transition.
-
-The key error from apt reads something like this:
-
-```
-The following packages have unmet dependencies:
- libnss3 : Depends: libnspr4 (>= 2:4.12) but it is not installable
-E: Unable to correct problems, you have held broken packages.
-```
+Twelve dependencies, all missing. Standard enough for a bare-bones cloud image — but the fix isn't as straightforward as it should be.
 
 ## What's Actually Happening
 
-Ubuntu 24.04 ("Noble") shipped with a mass rename of shared libraries to include a `t64` suffix — this was the big 64-bit `time_t` migration. Packages that were `libfoo.so.0` became `libfoo.so.0t64`. The old package names still exist as transitional dummy packages that depend on the new `t64` names, but Playwright's internal dependency resolver doesn't know about this yet. It generates an apt command referencing the old non-t64 names, and since the transitional packages aren't always direct replacements, apt bails.
+Ubuntu 24.04 ("Noble") shipped with a mass rename of shared libraries to include a `t64` suffix — this was the big 64-bit `time_t` migration. Packages that were `libasound2` are now `libasound2t64`. The old package names still exist as transitional dummy packages that depend on the new `t64` names, but the transition isn't seamless.
 
-The real issue is that Playwright's `install-deps` subcommand (as of mid-2025/early-2026) hardcodes the pre-Noble package names. It hasn't been updated to use the `t64` variants Ubuntu now ships.
+When you run `dpkg -i` on Chrome's `.deb`, it records its dependency list using the **pre-Noble** package names (`libasound2`, not `libasound2t64`). Then when `apt-get install -f` tries to satisfy those deps, it can find the transitional packages in most cases — but `libasound2` is a **virtual package**, which creates ambiguity.
 
-## The Fix
+## The Fix (real steps that worked)
 
-I've landed on two approaches, both of which work.
-
-### Approach 1: Install the system deps manually
-
-Let Playwright install the browser binary but handle system dependencies yourself:
+### Step 1: Try explicit install — hits the virtual package wall
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y libnss3 libnspr4 libatk1.0-0t64 libcups2t64 \
-  libdrm2 libdbus-1-3 libxkbcommon0 libxcomposite1 libxdamage1 \
-  libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64 \
-  libatspi2.0-0t64 libwayland-client0
+apt-get install -y fonts-liberation libasound2 libatk-bridge2.0-0 libatk1.0-0 \
+  libatspi2.0-0 libcups2 libgbm1 libgtk-3-0 libpango-1.0-0 libcairo2 \
+  libvulkan1 xdg-utils
 ```
 
-Notice I mixed `t64` and non-t64 names — some packages got the rename, some didn't. The `t64` ones are specifically those that declare a `t64` ABI variant. Package names ending in `t64` are the correct ones for Noble.
+This fails with:
 
-If you get a "package not found" for a t64 name, the non-t64 transitional package still works on Noble and pulls in the t64 variant through dependencies. The trick is knowing which is which, which brings me to approach 2.
+```
+Package libasound2 is a virtual package provided by:
+  libasound2t64 1.2.11-1build2
+You should explicitly select one to install.
+```
 
-### Approach 2: Pin to Jammy Debs (Hacky, but works)
+`libasound2` is a virtual package on Noble — it's provided by `libasound2t64`, but apt refuses to resolve it automatically when given as an explicit target. The same ambiguity doesn't apply to the other packages (they're real transitional packages, not virtual), but one blocker is enough to kill the whole command.
 
-If you don't care about elegance and just want Chrome to run:
+### Step 2: Fix the asound ambiguity, then let apt do the rest
+
+Replace `libasound2` with `libasound2t64` in the install list, then let `--fix-broken` pull in the rest:
 
 ```bash
-# Add focal/jammy repos for the specific chrome deps
-# Then apt install from those repos
+apt install libasound2t64 -y
+apt --fix-broken install -y
 ```
 
-I don't actually recommend this — it creates a FrankenDebian situation. Stick with approach 1.
+That second command pulls in **142 packages** — including all the other listed deps and their transitive dependencies, many of which are the `t64`-renamed variants (`libcups2t64`, `libatk1.0-0t64`, etc.). After this, `dpkg --configure -a` completes and Chrome is installed and working.
 
-### Approach 3: Use the `--force` flag with a dep whitelist
-
-Playwright 1.50+ added a `--skip-browser-download` flag. Combine with manual dependency installation:
+### Clean one-liner for a fresh server
 
 ```bash
-npx playwright install --with-deps --force chromium
+wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
+  dpkg -i google-chrome-stable_current_amd64.deb 2>/dev/null; \
+  apt-get install -y libasound2t64 && \
+  apt --fix-broken install -y
 ```
 
-This ignores Playwright's distro check and tries to install deps anyway, but on 24.04 it still fails because of the t64 mismatch. So this doesn't save you.
-
-## The Cleanest Solution
-
-What I actually do now on every 24.04 server:
-
-```bash
-# Let Playwright download the browser binary
-npx playwright install chromium
-
-# If the system dep install stage fails, do it by hand
-sudo apt-get install -y $(dpkg -l | grep -oP 'lib\S+t64' | sort -u) \
-  libnss3 libnspr4 libatk-bridge2.0-0 libcups2 \
-  libxshmfence1 libglib2.0-0 libgtk-3-0
-
-# Verify it works
-npx playwright open chromium
-```
-
-If you get `error while loading shared libraries: libnss3.so: cannot open shared object file`, you're still missing a dep. Run `ldd /path/to/chrome | grep "not found"` to see exactly which ones.
+Ignore the dpkg errors on the first line. The `libasound2t64` + `--fix-broken` combo handles everything.
 
 ## Why This Matters for Self-Hosted AI Ops
 
-If you're running headless browser automation for AI operations — scraping LLM leaderboards, automating login flows for API dashboards, or running browser-based agents — Chrome on a VPS is table stakes. And VPS providers are shipping Ubuntu 24.04 by default now. You *will* hit this.
+If you're running headless browser automation on a VPS — whether for Playwright, Puppeteer, browser-based agents, or plain old web scraping — Chrome on a Ubuntu 24.04 server is table stakes. And VPS providers are shipping Noble by default now. You *will* hit this dependency wall.
 
-The good news: once the deps are sorted, Chrome runs fine. Performance is stable. There's no deeper compatibility issue. It's just a packaging name mismatch that costs you 20 minutes of hair-pulling the first time.
-
-## The One-Liner I Wish I'd Had
-
-For a fresh 24.04 install where you want Playwright + Chromium working in under a minute:
-
-```bash
-apt-get update && apt-get install -y ca-certificates curl gnupg && \
-npx playwright install chromium 2>/dev/null || true && \
-apt-get install -y libnss3 libnspr4 libatk1.0-0t64 libcups2t64 \
-  libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libgbm1 \
-  libasound2t64 libatspi2.0-0t64 2>/dev/null && \
-npx playwright install chromium
-```
-
-Ignore the errors on the first attempt. The second one will work.
+The good news: once the deps are sorted, Chrome runs fine. There's no deeper compatibility issue. It's just a packaging name mismatch that costs you 15 minutes the first time.
 
 ---
 
-*If you're fighting these same battles setting up automated browser agents on a VPS, I've been collecting these fixes into a single Ansible-style playbook. [Check out the self-hosted AI agent starter kit on Gumroad](https://brainscratch.gumroad.com/l/snjbhd).*
+*If you're fighting these same battles setting up automated browser agents on a VPS, I've been collecting these fixes and templates into a practical ops pack. [Check out the Self-Hosted AI Assistant Ops Kit on Gumroad](https://brainscratch.gumroad.com/l/snjbhd).*
