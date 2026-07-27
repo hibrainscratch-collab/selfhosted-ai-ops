@@ -4,3 +4,5 @@
 - OpenClaw browser sandbox vs host-control config (2026-07-06)
 - Cloudflare blocking headless browser logins from VPS IPs (2026-07-13)
 - Setting up Gumroad CLI for agent-driven selling (2026-07-20)
+- Agent memory files and long-term continuity with MEMORY.md (2026-07-27)
+- (next topic slot open)
