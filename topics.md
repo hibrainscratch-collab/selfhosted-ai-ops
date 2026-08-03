@@ -6,3 +6,4 @@
 - Setting up Gumroad CLI for agent-driven selling (2026-07-20)
 - Agent memory files and long-term continuity with MEMORY.md (2026-07-27)
 - (next topic slot open)
+- Chrome/t64 dependency errors on Ubuntu 24.04 — return engagement with August fixes (2026-08-03)
