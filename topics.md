@@ -8,3 +8,4 @@
 - Agent memory files and long-term continuity with MEMORY.md (2026-07-27)
 - OpenClaw sub-agents for cost-effective AI operations (2026-08-10)
 - Chrome/t64 dependency errors on Ubuntu 24.04 — return engagement with August fixes (2026-08-03)
+- Self-hosting OpenClaw: systemd service, Caddy reverse proxy, and keeping your agent alive (2026-08-17)
